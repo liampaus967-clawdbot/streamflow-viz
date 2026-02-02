@@ -50,9 +50,9 @@ const StreamflowMap: React.FC = () => {
   const [stats, setStats] = useState({ count: 0, maxFlow: 0 });
 
   const [viewport, setViewport] = useState({
-    latitude: 39.8283,
-    longitude: -98.5795,
-    zoom: 5,
+    latitude: 46.8721,
+    longitude: -114.0091,
+    zoom: 8,
   });
 
   // Fetch flow data for current bounds
