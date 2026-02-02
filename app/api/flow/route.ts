@@ -12,6 +12,10 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get('limit') || '5000');
 
   try {
+    // Calculate simplification tolerance based on bbox size (more aggressive when zoomed out)
+    const bboxWidth = Math.abs(east - west);
+    const simplifyTolerance = Math.max(0.0005, bboxWidth / 1000);
+
     // Query streams with flow data within bounding box
     const result = await pool.query(`
       SELECT 
@@ -20,17 +24,17 @@ export async function GET(request: NextRequest) {
         n.velocity_ms,
         r.gnis_name,
         r.stream_order,
-        ST_AsGeoJSON(ST_Simplify(r.geom, 0.001))::json as geometry
+        ST_AsGeoJSON(ST_Simplify(r.geom, $6))::json as geometry
       FROM river_edges r
       JOIN nwm_velocity n ON r.comid = n.comid
       WHERE ST_Intersects(
         r.geom, 
         ST_MakeEnvelope($1, $2, $3, $4, 4326)
       )
-      AND n.streamflow_cms > 0
+      AND n.streamflow_cms > 0.1
       ORDER BY n.streamflow_cms DESC
       LIMIT $5
-    `, [west, south, east, north, limit]);
+    `, [west, south, east, north, limit, simplifyTolerance]);
 
     // Build GeoJSON FeatureCollection
     const geojson = {

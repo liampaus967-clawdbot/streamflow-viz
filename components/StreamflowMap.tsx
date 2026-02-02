@@ -5,6 +5,15 @@ import "mapbox-gl/dist/mapbox-gl.css";
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
+// Debounce helper
+function debounce<T extends (...args: any[]) => any>(fn: T, ms: number) {
+  let timer: NodeJS.Timeout;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
 // Flow color scale: green (low) → yellow → orange → red (high)
 const FLOW_COLORS = {
   very_low: "#22c55e",   // Green
@@ -47,12 +56,20 @@ const StreamflowMap: React.FC = () => {
   });
 
   // Fetch flow data for current bounds
-  const fetchFlowData = useCallback(async () => {
+  const fetchFlowDataInner = useCallback(async () => {
     const map = mapRef.current?.getMap();
     if (!map) return;
 
     const bounds = map.getBounds();
     if (!bounds) return;
+    
+    const zoom = map.getZoom();
+    
+    // Adjust limit based on zoom - fewer features when zoomed out
+    let limit = 2000;
+    if (zoom >= 8) limit = 5000;
+    if (zoom >= 10) limit = 8000;
+    if (zoom < 6) limit = 1000;
 
     setLoading(true);
     try {
@@ -61,7 +78,7 @@ const StreamflowMap: React.FC = () => {
         south: bounds.getSouth().toString(),
         east: bounds.getEast().toString(),
         north: bounds.getNorth().toString(),
-        limit: "8000",
+        limit: limit.toString(),
       });
 
       const response = await fetch(`/api/flow?${params}`);
@@ -81,6 +98,12 @@ const StreamflowMap: React.FC = () => {
       setLoading(false);
     }
   }, []);
+
+  // Debounced version - waits 300ms after pan/zoom stops
+  const fetchFlowData = useCallback(
+    debounce(fetchFlowDataInner, 300),
+    [fetchFlowDataInner]
+  );
 
   // Fetch data on map move end
   const handleMoveEnd = useCallback((evt: ViewStateChangeEvent) => {
