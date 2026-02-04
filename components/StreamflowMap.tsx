@@ -8,9 +8,9 @@ const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 // S3 URL for live NWM data
 const S3_LIVE_DATA_URL = "https://nwm-streamflow-data.s3.us-east-1.amazonaws.com/live/current_velocity.json";
 
-// Tileset with COMID
-const RIVER_TILESET = "mapbox://lman967.d0g758s3";
-const SOURCE_LAYER = "testRiversSet-cr53z3";
+// Tileset with COMID (Vermont rivers)
+const RIVER_TILESET = "mapbox://lman967.9hfg3bbo";
+const SOURCE_LAYER = "vtRivers-3bijjc";
 
 // Refresh interval: 15 minutes
 const REFRESH_INTERVAL = 15 * 60 * 1000;
@@ -43,7 +43,7 @@ const StreamflowMap: React.FC = () => {
   const [viewport] = useState({
     latitude: 44.0,
     longitude: -72.7,
-    zoom: 8,
+    zoom: 9,
   });
 
   // Apply feature states to the map (chunked to avoid blocking UI)
