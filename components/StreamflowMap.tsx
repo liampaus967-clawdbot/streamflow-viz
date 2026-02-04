@@ -46,7 +46,7 @@ const StreamflowMap: React.FC = () => {
     zoom: 8,
   });
 
-  // Apply feature states to the map
+  // Apply feature states to the map (chunked to avoid blocking UI)
   const applyFeatureStates = useCallback((data: LiveData) => {
     if (!mapRef.current) return;
 
@@ -56,32 +56,47 @@ const StreamflowMap: React.FC = () => {
       return;
     }
 
+    const entries = Object.entries(data.sites);
+    let index = 0;
     let successCount = 0;
     let maxFlow = 0;
+    const CHUNK_SIZE = 5000;
 
-    Object.entries(data.sites).forEach(([comid, streamflow]) => {
-      try {
-        // Set feature state with flow value
-        map.setFeatureState(
-          {
-            source: "rivers",
-            sourceLayer: SOURCE_LAYER,
-            id: Number(comid),
-          },
-          {
-            flow: streamflow,
-            category: getFlowCategory(streamflow),
-          }
-        );
-        successCount++;
-        if (streamflow > maxFlow) maxFlow = streamflow;
-      } catch (e) {
-        // Feature may not be in current view
+    const processChunk = () => {
+      const end = Math.min(index + CHUNK_SIZE, entries.length);
+      
+      for (let i = index; i < end; i++) {
+        const [comid, streamflow] = entries[i];
+        try {
+          map.setFeatureState(
+            {
+              source: "rivers",
+              sourceLayer: SOURCE_LAYER,
+              id: Number(comid),
+            },
+            {
+              flow: streamflow,
+              category: getFlowCategory(streamflow),
+            }
+          );
+          successCount++;
+          if (streamflow > maxFlow) maxFlow = streamflow;
+        } catch (e) {
+          // Feature may not be in tileset
+        }
       }
-    });
 
-    console.log(`Applied feature states to ${successCount.toLocaleString()} streams`);
-    setStats({ count: successCount, maxFlow });
+      index = end;
+      
+      if (index < entries.length) {
+        requestAnimationFrame(processChunk);
+      } else {
+        console.log(`Applied feature states to ${successCount.toLocaleString()} streams`);
+        setStats({ count: successCount, maxFlow });
+      }
+    };
+
+    processChunk();
   }, []);
 
   // Fetch live data from S3
