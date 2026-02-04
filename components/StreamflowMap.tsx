@@ -1,147 +1,167 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import Map, { Source, Layer, NavigationControl, ScaleControl } from "react-map-gl";
-import type { MapRef, ViewStateChangeEvent } from "react-map-gl";
+import type { MapRef } from "react-map-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
-// Debounce helper
-function debounce<T extends (...args: any[]) => any>(fn: T, ms: number) {
-  let timer: NodeJS.Timeout;
-  return (...args: Parameters<T>) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
+// S3 URL for live NWM data
+const S3_LIVE_DATA_URL = "https://nwm-streamflow-data.s3.us-east-1.amazonaws.com/live/current_velocity.json";
+
+// Tileset with COMID
+const RIVER_TILESET = "mapbox://lman967.d0g758s3";
+const SOURCE_LAYER = "testRiversSet-cr53z3";
+
+// Refresh interval: 15 minutes
+const REFRESH_INTERVAL = 15 * 60 * 1000;
+
+interface LiveData {
+  generated_at: string;
+  reference_time: string;
+  site_count: number;
+  sites: Record<string, number>; // comid → streamflow (m³/s)
 }
 
-// Flow color scale: green (low) → yellow → orange → red (high)
-const FLOW_COLORS = {
-  very_low: "#22c55e",   // Green
-  low: "#84cc16",        // Lime
-  moderate: "#eab308",   // Yellow
-  high: "#f97316",       // Orange
-  very_high: "#ef4444",  // Red
-  extreme: "#dc2626",    // Dark Red
-};
-
-interface FlowFeature {
-  type: "Feature";
-  properties: {
-    comid: number;
-    streamflow_cms: number;
-    velocity_ms: number;
-    name: string | null;
-    stream_order: number;
-    flow_category: string;
-  };
-  geometry: any;
-}
-
-interface FlowData {
-  type: "FeatureCollection";
-  features: FlowFeature[];
+// Categorize streamflow for styling
+function getFlowCategory(cms: number): string {
+  if (cms < 1) return "very_low";
+  if (cms < 10) return "low";
+  if (cms < 50) return "moderate";
+  if (cms < 200) return "high";
+  if (cms < 1000) return "very_high";
+  return "extreme";
 }
 
 const StreamflowMap: React.FC = () => {
   const mapRef = useRef<MapRef>(null);
-  const [flowData, setFlowData] = useState<FlowData | null>(null);
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [referenceTime, setReferenceTime] = useState<string | null>(null);
   const [stats, setStats] = useState({ count: 0, maxFlow: 0 });
+  const [error, setError] = useState<string | null>(null);
 
-  const [viewport, setViewport] = useState({
-    latitude: 46.8721,
-    longitude: -114.0091,
+  const [viewport] = useState({
+    latitude: 44.0,
+    longitude: -72.7,
     zoom: 8,
   });
 
-  // Fetch flow data for current bounds
-  const fetchFlowDataInner = useCallback(async () => {
-    const map = mapRef.current?.getMap();
-    if (!map) return;
+  // Apply feature states to the map
+  const applyFeatureStates = useCallback((data: LiveData) => {
+    if (!mapRef.current) return;
 
-    const bounds = map.getBounds();
-    if (!bounds) return;
-    
-    const zoom = map.getZoom();
-    
-    // Adjust limit based on zoom - fewer features when zoomed out
-    let limit = 2000;
-    if (zoom >= 8) limit = 5000;
-    if (zoom >= 10) limit = 8000;
-    if (zoom < 6) limit = 1000;
+    const map = mapRef.current.getMap();
+    if (!map.getSource("rivers")) {
+      console.warn("Source not ready");
+      return;
+    }
 
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({
-        west: bounds.getWest().toString(),
-        south: bounds.getSouth().toString(),
-        east: bounds.getEast().toString(),
-        north: bounds.getNorth().toString(),
-        limit: limit.toString(),
-      });
+    let successCount = 0;
+    let maxFlow = 0;
 
-      const response = await fetch(`/api/flow?${params}`);
-      const data: FlowData = await response.json();
-      
-      setFlowData(data);
-      setLastUpdate(new Date());
-      
-      // Calculate stats
-      if (data.features.length > 0) {
-        const maxFlow = Math.max(...data.features.map(f => f.properties.streamflow_cms));
-        setStats({ count: data.features.length, maxFlow });
+    Object.entries(data.sites).forEach(([comid, streamflow]) => {
+      try {
+        // Set feature state with flow value
+        map.setFeatureState(
+          {
+            source: "rivers",
+            sourceLayer: SOURCE_LAYER,
+            id: Number(comid),
+          },
+          {
+            flow: streamflow,
+            category: getFlowCategory(streamflow),
+          }
+        );
+        successCount++;
+        if (streamflow > maxFlow) maxFlow = streamflow;
+      } catch (e) {
+        // Feature may not be in current view
       }
-    } catch (error) {
-      console.error("Failed to fetch flow data:", error);
+    });
+
+    console.log(`Applied feature states to ${successCount.toLocaleString()} streams`);
+    setStats({ count: successCount, maxFlow });
+  }, []);
+
+  // Fetch live data from S3
+  const fetchLiveData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${S3_LIVE_DATA_URL}?t=${Date.now()}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const data: LiveData = await response.json();
+      setLastUpdate(new Date());
+      setReferenceTime(data.reference_time);
+
+      applyFeatureStates(data);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to fetch";
+      setError(msg);
+      console.error("Error fetching live data:", err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyFeatureStates]);
 
-  // Debounced version - waits 300ms after pan/zoom stops
-  const fetchFlowData = useCallback(
-    debounce(fetchFlowDataInner, 300),
-    [fetchFlowDataInner]
-  );
-
-  // Fetch data on map move end
-  const handleMoveEnd = useCallback((evt: ViewStateChangeEvent) => {
-    setViewport(evt.viewState);
-    fetchFlowData();
-  }, [fetchFlowData]);
-
-  // Initial fetch
+  // Set up auto-refresh
   useEffect(() => {
-    const timer = setTimeout(fetchFlowData, 500);
-    return () => clearTimeout(timer);
-  }, [fetchFlowData]);
+    const interval = setInterval(fetchLiveData, REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [fetchLiveData]);
 
-  // Layer style for flow lines
-  const flowLayerStyle: any = {
-    id: "streamflow-layer",
+  // Fetch when map source is ready
+  const handleMapLoad = useCallback(() => {
+    const map = mapRef.current?.getMap();
+    if (!map) return;
+
+    const checkAndFetch = () => {
+      if (map.getSource("rivers") && map.isSourceLoaded("rivers")) {
+        fetchLiveData();
+      }
+    };
+
+    map.on("sourcedata", (e) => {
+      if (e.sourceId === "rivers" && e.isSourceLoaded) {
+        fetchLiveData();
+      }
+    });
+
+    // Check immediately in case already loaded
+    checkAndFetch();
+  }, [fetchLiveData]);
+
+  // Layer style using feature-state
+  const riverLayerStyle: any = {
+    id: "river-flow-layer",
     type: "line",
+    source: "rivers",
+    "source-layer": SOURCE_LAYER,
     paint: {
+      // Color based on flow category via feature-state
       "line-color": [
-        "match",
-        ["get", "flow_category"],
-        "very_low", FLOW_COLORS.very_low,
-        "low", FLOW_COLORS.low,
-        "moderate", FLOW_COLORS.moderate,
-        "high", FLOW_COLORS.high,
-        "very_high", FLOW_COLORS.very_high,
-        "extreme", FLOW_COLORS.extreme,
-        "#3b82f6" // default blue
+        "case",
+        ["==", ["feature-state", "category"], "extreme"], "#dc2626",
+        ["==", ["feature-state", "category"], "very_high"], "#ef4444",
+        ["==", ["feature-state", "category"], "high"], "#f97316",
+        ["==", ["feature-state", "category"], "moderate"], "#eab308",
+        ["==", ["feature-state", "category"], "low"], "#84cc16",
+        ["==", ["feature-state", "category"], "very_low"], "#22c55e",
+        "#64748b", // Default gray (no data)
       ],
+      // Width based on flow value
       "line-width": [
         "interpolate",
         ["linear"],
-        ["get", "streamflow_cms"],
+        ["coalesce", ["feature-state", "flow"], 0],
         0, 1,
         10, 2,
         100, 3,
         1000, 5,
-        10000, 8
+        10000, 8,
       ],
       "line-opacity": 0.85,
     },
@@ -151,8 +171,8 @@ const StreamflowMap: React.FC = () => {
     <div style={{ width: "100%", height: "100vh", position: "relative" }}>
       <Map
         ref={mapRef}
-        {...viewport}
-        onMoveEnd={handleMoveEnd}
+        initialViewState={viewport}
+        onLoad={handleMapLoad}
         style={{ width: "100%", height: "100%" }}
         mapStyle="mapbox://styles/mapbox/dark-v11"
         mapboxAccessToken={MAPBOX_TOKEN}
@@ -160,11 +180,15 @@ const StreamflowMap: React.FC = () => {
         <NavigationControl position="top-right" />
         <ScaleControl position="bottom-right" unit="imperial" />
 
-        {flowData && (
-          <Source id="streamflow" type="geojson" data={flowData}>
-            <Layer {...flowLayerStyle} />
-          </Source>
-        )}
+        {/* River tileset source */}
+        <Source
+          id="rivers"
+          type="vector"
+          url={RIVER_TILESET}
+          promoteId={{ [SOURCE_LAYER]: "comid" }}
+        >
+          <Layer {...riverLayerStyle} />
+        </Source>
       </Map>
 
       {/* Header */}
@@ -190,11 +214,11 @@ const StreamflowMap: React.FC = () => {
             width: 36,
             height: 36,
             borderRadius: 10,
-            background: "linear-gradient(135deg, #22c55e 0%, #15803d 100%)",
+            background: "linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            boxShadow: "0 2px 8px rgba(34, 197, 94, 0.4)",
+            boxShadow: "0 2px 8px rgba(59, 130, 246, 0.4)",
           }}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
@@ -203,12 +227,12 @@ const StreamflowMap: React.FC = () => {
         </div>
         <div>
           <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>
-            Streamflow
+            NWM Streamflow
           </div>
           <div style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.6)", marginTop: 2 }}>
-            {loading ? "Loading..." : `${stats.count.toLocaleString()} streams`}
-            {lastUpdate && !loading && (
-              <span> • {lastUpdate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+            {loading ? "Loading..." : error ? `Error: ${error}` : `${stats.count.toLocaleString()} streams`}
+            {referenceTime && !loading && (
+              <span> • {new Date(referenceTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} UTC</span>
             )}
           </div>
         </div>
@@ -234,12 +258,12 @@ const StreamflowMap: React.FC = () => {
           Flow Rate (m³/s)
         </div>
         {[
-          { label: "> 1000 (Extreme)", color: FLOW_COLORS.extreme },
-          { label: "200-1000 (Very High)", color: FLOW_COLORS.very_high },
-          { label: "50-200 (High)", color: FLOW_COLORS.high },
-          { label: "10-50 (Moderate)", color: FLOW_COLORS.moderate },
-          { label: "1-10 (Low)", color: FLOW_COLORS.low },
-          { label: "< 1 (Very Low)", color: FLOW_COLORS.very_low },
+          { label: "> 1000 (Extreme)", color: "#dc2626" },
+          { label: "200-1000 (Very High)", color: "#ef4444" },
+          { label: "50-200 (High)", color: "#f97316" },
+          { label: "10-50 (Moderate)", color: "#eab308" },
+          { label: "1-10 (Low)", color: "#84cc16" },
+          { label: "< 1 (Very Low)", color: "#22c55e" },
         ].map((item) => (
           <div
             key={item.label}
@@ -268,7 +292,7 @@ const StreamflowMap: React.FC = () => {
           paddingTop: 10,
           borderTop: "1px solid rgba(0,0,0,0.06)"
         }}>
-          Data: National Water Model
+          Data: NOAA National Water Model
         </div>
       </div>
     </div>
