@@ -6,7 +6,7 @@ import "mapbox-gl/dist/mapbox-gl.css";
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
 // S3 URL for live NWM data
-const S3_LIVE_DATA_URL = "https://fgp-flow-percentile-data-west-dev.s3.us-west-1.amazonaws.com/live/current_velocity.json";
+const S3_LIVE_DATA_URL = "https://nwm-streamflow-data.s3.us-east-1.amazonaws.com/live/current_velocity.json";
 
 // Tileset with COMID
 const RIVER_TILESET = "mapbox://lman967.d0g758s3";
