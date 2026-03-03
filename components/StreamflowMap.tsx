@@ -9,8 +9,8 @@ const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 const S3_LIVE_DATA_URL = "https://nwm-streamflow-data.s3.us-east-1.amazonaws.com/live/current_velocity.json";
 
 // Tileset with COMID (Vermont rivers)
-const RIVER_TILESET = "mapbox://lman967.9hfg3bbo";
-const SOURCE_LAYER = "vtRivers-3bijjc";
+const RIVER_TILESET = "mapbox://lman967.east-coast-rivers";
+const SOURCE_LAYER = "eastCoastRivers";
 
 // Refresh interval: 15 minutes
 const REFRESH_INTERVAL = 15 * 60 * 1000;
